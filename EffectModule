@@ -1,0 +1,240 @@
+--!strict
+-- ReplicatedStorage.Modules.EffectModule
+-- Author: Skin Boss
+-- Description: Centralized VFX handler for Muzzle, Hit, Death, LevelUp, and Kill effects.
+
+local Players = game:GetService("Players")
+local Debris = game:GetService("Debris")
+local RunService = game:GetService("RunService")
+
+local EffectModule = {}
+
+-- Configuration for effect lifespans
+local CONFIG = {
+    MuzzleLife = 0.1,
+    TracerLife = 0.2,
+    ImpactLife = 0.5,
+    DeathLife = 2.0,
+    SpecialLife = 1.5,
+}
+
+-- Helper: Create a particle emitter quickly
+local function CreateParticle(parent: Instance, properties: any): ParticleEmitter
+    local p = Instance.new("ParticleEmitter")
+    p.Parent = parent
+    for k, v in pairs(properties) do
+        p[k] = v
+    end
+    return p
+end
+
+-- Helper: Create standard attachment
+local function CreateAttachment(parent: Instance): Attachment
+    local a = Instance.new("Attachment")
+    a.Parent = parent
+    return a
+end
+
+--[[
+    Creates a Muzzle Flash effect at a specific CFrame.
+    @param cframe CFrame - The position/rotation of the muzzle
+    @param parent Instance - Where to parent the effect (usually Workspace for visuals)
+]]
+function EffectModule.MuzzleFlash(cframe: CFrame, parent: Instance)
+    if RunService:IsServer() then return end -- Client only optimization
+
+    local part = Instance.new("Part")
+    part.Size = Vector3.new(0.2, 0.2, 0.2)
+    part.CFrame = cframe
+    part.Anchored = true
+    part.CanCollide = false
+    part.Transparency = 1
+    part.Parent = parent
+
+    local light = Instance.new("PointLight")
+    light.Color = Color3.fromRGB(255, 200, 100)
+    light.Brightness = 2
+    light.Range = 5
+    light.Parent = part
+
+    local att = CreateAttachment(part)
+    CreateParticle(att, {
+        Color = ColorSequence.new(Color3.fromRGB(255, 255, 200)),
+        Size = NumberSequence.new(0.5, 0),
+        Lifetime = NumberRange.new(0.1),
+        Rate = 0,
+        Speed = NumberRange.new(5),
+        SpreadAngle = Vector2.new(180, 180),
+        EmitOnce = true -- Custom property logic handled via Emit below
+    }):Emit(5)
+
+    Debris:AddItem(part, CONFIG.MuzzleLife)
+end
+
+--[[
+    Creates a Bullet Tracer (beam) from Start to End.
+]]
+function EffectModule.BulletTracer(startPos: Vector3, endPos: Vector3, color: Color3?)
+    if RunService:IsServer() then return end
+
+    local distance = (startPos - endPos).Magnitude
+    local part = Instance.new("Part")
+    part.Size = Vector3.new(0.1, 0.1, distance)
+    part.CFrame = CFrame.lookAt(startPos, endPos) * CFrame.new(0, 0, -distance / 2)
+    part.Anchored = true
+    part.CanCollide = false
+    part.Color = color or Color3.fromRGB(255, 255, 255)
+    part.Material = Enum.Material.Neon
+    part.Parent = workspace
+
+    Debris:AddItem(part, CONFIG.TracerLife)
+end
+
+--[[
+    Impact Effect: Sparks and Blood
+    @param position Vector3
+    @param surfaceNormal Vector3
+    @param isBlood boolean - If true, spawns red particles, otherwise sparks
+]]
+function EffectModule.HitImpact(position: Vector3, surfaceNormal: Vector3, isBlood: boolean)
+    if RunService:IsServer() then return end
+
+    local part = Instance.new("Part")
+    part.Size = Vector3.new(0.2, 0.2, 0.2)
+    part.CFrame = CFrame.fromMatrix(position, Vector3.new(), surfaceNormal, surfaceNormal:Cross(Vector3.new()))
+    part.Anchored = true
+    part.CanCollide = false
+    part.Transparency = 1
+    part.Parent = workspace
+
+    local att = CreateAttachment(part)
+
+    if isBlood then
+        CreateParticle(att, {
+            Color = ColorSequence.new(Color3.fromRGB(140, 0, 0)),
+            Size = NumberSequence.new(0.3, 0),
+            Lifetime = NumberRange.new(0.3, 0.5),
+            Rate = 0,
+            Speed = NumberRange.new(10, 20),
+            EmissionDirection = Enum.NormalId.Front
+        }):Emit(8)
+    else
+        -- Sparks
+        CreateParticle(att, {
+            Color = ColorSequence.new(Color3.fromRGB(255, 255, 0)),
+            Size = NumberSequence.new(0.1, 0),
+            Lifetime = NumberRange.new(0.2, 0.4),
+            Rate = 0,
+            Speed = NumberRange.new(30, 50),
+            EmissionDirection = Enum.NormalId.Front
+        }):Emit(12)
+    end
+
+    Debris:AddItem(part, CONFIG.ImpactLife)
+end
+
+--[[
+    Death Effect: Explosion + Smoke + Disintegration
+]]
+function EffectModule.PlayDeathEffect(character: Model)
+    -- Play on all clients (or just client if visual only)
+    -- For this example, we assume this function is called locally or replicated
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if humanoid then humanoid.PlatformStand = true end
+
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+
+    -- 1. Explosion Ring
+    local ring = Instance.new("Part")
+    ring.Size = Vector3.new(0.5, 0.5, 0.5)
+    ring.Transparency = 1
+    ring.Anchored = true
+    ring.CFrame = rootPart.CFrame
+    ring.Parent = workspace
+    CreateParticle(CreateAttachment(ring), {
+        Texture = "rbxassetid://243098098", -- Ring texture (or similar)
+        Color = ColorSequence.new(Color3.fromRGB(0, 0, 0)),
+        Size = NumberSequence.new(1, 10),
+        Transparency = NumberSequence.new(0, 1),
+        Lifetime = NumberRange.new(0.5),
+        Rate = 0,
+        Speed = NumberRange.new(0),
+        RotSpeed = NumberRange.new(0)
+    }):Emit(1)
+
+    -- 2. Smoke
+    local smokePart = ring:Clone()
+    CreateParticle(CreateAttachment(smokePart), {
+        Color = ColorSequence.new(Color3.fromRGB(50, 50, 50)),
+        Size = NumberSequence.new(2, 8),
+        Transparency = NumberSequence.new(0.3, 1),
+        Lifetime = NumberRange.new(1.0),
+        Rate = 0,
+        Speed = NumberRange.new(5)
+    }):Emit(15)
+    smokePart.Parent = workspace
+
+    Debris:AddItem(ring, CONFIG.DeathLife)
+    Debris:AddItem(smokePart, CONFIG.DeathLife)
+end
+
+--[[
+    Level Up Effect: Glowing aura and particles
+]]
+function EffectModule.LevelUp(character: Model)
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+
+    local att = Instance.new("Attachment")
+    att.Parent = rootPart
+
+    -- Sparkles
+    local sparkles = CreateParticle(att, {
+        Color = ColorSequence.new(Color3.fromRGB(255, 215, 0)), -- Gold
+        Size = NumberSequence.new(0.5, 0),
+        Lifetime = NumberRange.new(0.5, 1.0),
+        Rate = 50,
+        Speed = NumberRange.new(5),
+        LightEmission = 1
+    })
+
+    -- Remove after duration
+    task.delay(CONFIG.SpecialLife, function()
+        sparkles.Enabled = false
+        att:Destroy()
+    end)
+end
+
+--[[
+    Kill Effect: Skull (maybe just a decal) + Lightning
+]]
+function EffectModule.KillEffect(targetPosition: Vector3)
+    local orb = Instance.new("Part")
+    orb.Size = Vector3.new(1,1,1)
+    orb.Shape = Enum.PartType.Ball
+    orb.Color = Color3.fromRGB(100, 0, 255)
+    orb.Material = Enum.Material.Neon
+    orb.Anchored = true
+    orb.CFrame = CFrame.new(targetPosition)
+    orb.Parent = workspace
+    
+    -- Lightning burst
+    local light = Instance.new("PointLight")
+    light.Color = Color3.new(1, 0, 1)
+    light.Brightness = 3
+    light.Parent = orb
+
+    CreateParticle(CreateAttachment(orb), {
+        Color = ColorSequence.new(Color3.fromRGB(200, 0, 255)),
+        Size = NumberSequence.new(0.5, 0),
+        Lifetime = NumberRange.new(0.5),
+        Rate = 0,
+        Speed = NumberRange.new(15)
+    }):Emit(20)
+
+    Debris:AddItem(orb, 0.5)
+end
+
+return EffectModule
