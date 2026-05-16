@@ -1,0 +1,227 @@
+local MatchService = {}
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Events = ReplicatedStorage:WaitForChild("Events")
+local GameModeModule = require(ReplicatedStorage.Modules.GameModeModule)
+
+local activeMatches = {}
+local queuedPlayers = {} -- [modeName] = {players}
+local queueTimers = {} -- [modeName] = timer task
+
+-- Add player to queue
+function MatchService.AddToQueue(player, modeName)
+    local modeData = GameModeModule.GetModeData(modeName)
+    if not modeData then return false, "Invalid mode" end
+    
+    if not queuedPlayers[modeName] then
+        queuedPlayers[modeName] = {}
+    end
+    
+    -- Check if already in queue
+    for _, p in pairs(queuedPlayers[modeName]) do
+        if p == player then return false, "Already in queue" end
+    end
+    
+    table.insert(queuedPlayers[modeName], player)
+    
+    -- Announce queue status
+    Events.Announce:FireClient(player, "Joined " .. modeName .. " queue! (" .. #queuedPlayers[modeName] .. "/" .. modeData.MinPlayers .. ")")
+    
+    -- Check if we can start
+    MatchService.CheckQueue(modeName)
+    
+    return true, "Added to queue"
+end
+
+-- Remove player from queue
+function MatchService.RemoveFromQueue(player, modeName)
+    if queuedPlayers[modeName] then
+        for i, p in pairs(queuedPlayers[modeName]) do
+            if p == player then
+                table.remove(queuedPlayers[modeName], i)
+                Events.Announce:FireClient(player, "Left " .. modeName .. " queue")
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- Check if queue can start a match
+function MatchService.CheckQueue(modeName)
+    local modeData = GameModeModule.GetModeData(modeName)
+    if not modeData then return end
+    
+    local queue = queuedPlayers[modeName]
+    if not queue or #queue < modeData.MinPlayers then return end
+    
+    -- Clear existing timer
+    if queueTimers[modeName] then
+        queueTimers[modeName]:Cancel()
+        queueTimers[modeName] = nil
+    end
+    
+    -- Start countdown timer
+    queueTimers[modeName] = task.spawn(function()
+        task.wait(5) -- 5 second countdown
+        
+        local currentQueue = queuedPlayers[modeName]
+        if currentQueue and #currentQueue >= modeData.MinPlayers then
+            local maxPlayers = math.min(modeData.MaxPlayers or #currentQueue, #currentQueue)
+            local matchPlayers = {}
+            
+            for i = 1, maxPlayers do
+                matchPlayers[i] = table.remove(currentQueue, 1)
+            end
+            
+            MatchService.CreateMatch(modeName, matchPlayers)
+        end
+        
+        queueTimers[modeName] = nil
+    end)
+end
+
+-- Create a new match
+function MatchService.CreateMatch(modeName, players)
+    local modeData = GameModeModule.GetModeData(modeName)
+    if not modeData then return nil end
+    
+    local matchId = tostring(os.time()) .. "_" .. math.random(9999)
+    
+    local match = {
+        Id = matchId,
+        Mode = modeName,
+        ModeData = modeData,
+        Players = players,
+        Scores = {},
+        Teams = {},
+        State = "Starting",
+    }
+    
+    -- Initialize scores
+    for _, player in pairs(players) do
+        match.Scores[player.Name] = 0
+    end
+    
+    -- Assign teams based on mode
+    if modeData.Type == "Team" then
+        match.Teams = MatchService.AssignTeams(players, modeData.NumTeams, modeData.TeamSize)
+    elseif modeData.Type == "Special" and modeName == "Juggernaut" then
+        match.Teams = MatchService.AssignJuggernaut(players)
+    end
+    
+    activeMatches[matchId] = match
+    
+    -- Teleport to arena and apply mode settings
+    for _, player in pairs(players) do
+        Events.MatchStarted:FireClient(player, modeName, match.Teams[player])
+        MatchService.ApplyModeSettings(player, modeData, modeName)
+    end
+    
+    return match
+end
+
+-- Assign teams for team modes
+function MatchService.AssignTeams(players, numTeams, teamSize)
+    local shuffled = {}
+    for _, p in pairs(players) do shuffled[#shuffled+1] = p end
+    
+    -- Shuffle
+    for i = #shuffled, 2, -1 do
+        local j = math.random(i)
+        shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+    end
+    
+    local teams = {}
+    for teamId = 1, numTeams do
+        teams[teamId] = {}
+    end
+    
+    for i, player in pairs(shuffled) do
+        local teamId = ((i-1) % numTeams) + 1
+        table.insert(teams[teamId], player)
+    end
+    
+    return teams
+end
+
+-- Assign juggernaut mode
+function MatchService.AssignJuggernaut(players)
+    local shuffled = {}
+    for _, p in pairs(players) do shuffled[#shuffled+1] = p end
+    
+    local juggernaut = shuffled[math.random(1, #shuffled)]
+    
+    return {
+        Juggernaut = {juggernaut},
+        Hunters = {}
+    }
+end
+
+-- Apply mode-specific settings to player
+function MatchService.ApplyModeSettings(player, modeData, modeName)
+    player.CharacterAdded:Connect(function(char)
+        local hum = char:WaitForChild("Humanoid")
+        
+        if modeName == "Juggernaut" then
+            -- Check if this player is the juggernaut
+            if player.Name == "Juggernaut" then -- You'll need to track this properly
+                hum.MaxHealth = modeData.JuggernautHP
+                hum.Health = modeData.JuggernautHP
+                hum.WalkSpeed = modeData.JuggernautSpeed
+                -- Apply 3x damage to weapons (handled in weapon script)
+            else
+                hum.MaxHealth = 1
+                hum.Health = 1
+                hum.WalkSpeed = modeData.NormalSpeed
+            end
+        elseif modeData.InstantSpawn then
+            hum.MaxHealth = 1
+            hum.Health = 1
+            -- Instant respawn handled elsewhere
+        else
+            hum.MaxHealth = 1
+            hum.Health = 1
+            hum.WalkSpeed = 16
+        end
+    end)
+end
+
+-- Award point to player
+function MatchService.AwardPoint(matchId, playerName)
+    local match = activeMatches[matchId]
+    if not match or match.State ~= "Starting" then return end
+    
+    match.Scores[playerName] = match.Scores[playerName] + 1
+    
+    -- Check win condition
+    if match.Scores[playerName] >= match.ModeData.WinScore then
+        MatchService.EndMatch(matchId, playerName)
+    end
+    
+    return match.Scores[playerName]
+end
+
+-- End match
+function MatchService.EndMatch(matchId, winnerName)
+    local match = activeMatches[matchId]
+    if not match then return end
+    
+    match.State = "Ending"
+    
+    -- Announce winner
+    for _, player in pairs(match.Players) do
+        Events.EndMatch:FireClient(player, winnerName, match.Scores)
+    end
+    
+    -- Clean up after delay
+    task.wait(10)
+    activeMatches[matchId] = nil
+end
+
+-- Get queue count
+function MatchService.GetQueueCount(modeName)
+    return queuedPlayers[modeName] and #queuedPlayers[modeName] or 0
+end
+
+return MatchService
