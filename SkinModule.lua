@@ -3,7 +3,10 @@
 -- Author: Skin Boss
 
 local SkinModule = {}
-
+SkinModule.Skin = {
+    --skins
+    {red = price10},{orange = price10},{yellow = price10},{green = price10},{lime = price10},{blue = price10},{purple = price10},{violet = price10},{maroon = price10},{black = price10},{whote = price10}
+}
 -- Definitions
 export type SkinData = {
     Id: string,
