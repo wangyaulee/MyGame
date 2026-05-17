@@ -8,7 +8,9 @@ local Debris = game:GetService("Debris")
 local RunService = game:GetService("RunService")
 
 local EffectModule = {}
-
+EffectModule.Effect{
+{fire = price 10},{lava = price 10},{magma = price 10},{electric = price 10},{wind = price 10},{leaf = price 10},{acid = price 10},{water = price 10},{ poison = price 10}
+}
 -- Configuration for effect lifespans
 local CONFIG = {
     MuzzleLife = 0.1,
